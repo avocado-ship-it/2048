@@ -2,6 +2,7 @@ import pygame
 import random
 import math
 import time
+import asyncio
 
 pygame.init()
 
@@ -33,6 +34,18 @@ MOVE_VEL = 20
 
 WINDOW = pygame.display.set_mode((WIDTH, HEIGHT))
 pygame.display.set_caption("2048")
+
+
+class GameState:
+    def __init__(self):
+        self.current_screen = "menu"
+        self.selected_option = 0
+        self.game_mode = "normal"
+        self.tiles = {}
+        self.start_time = 0
+        self.game_won = False
+        self.game_over = False
+        self.time_limit = 90
 
 
 class Tile:
@@ -122,8 +135,6 @@ def draw_start_screen(window, selected_option):
     inst_text = pygame.font.SysFont("arial", 24).render(instructions, True, FONT_COLOR)
     inst_x = (WIDTH - inst_text.get_width()) // 2
     window.blit(inst_text, (inst_x, HEIGHT - 100))
-    
-    pygame.display.update()
 
 
 def draw_grid(window):
@@ -185,7 +196,7 @@ def draw_timer(window, start_time, game_won, game_mode, time_limit=None):
     pygame.draw.line(window, OUTLINE_COLOR, (0, TIMER_AREA_HEIGHT), (WIDTH, TIMER_AREA_HEIGHT), 3)
 
 
-def draw(window, tiles, start_time, game_won, game_mode, time_limit=None):
+def draw_game(window, tiles, start_time, game_won, game_mode, time_limit=None):
     window.fill(BACKGROUND_COLOR)
     
     # Draw timer area
@@ -195,8 +206,6 @@ def draw(window, tiles, start_time, game_won, game_mode, time_limit=None):
         tile.draw(window)
 
     draw_grid(window)
-
-    pygame.display.update()
 
 
 def check_for_2048(tiles):
@@ -226,9 +235,10 @@ def get_random_pos(tiles):
     return row, col
 
 
-def move_tiles(window, tiles, clock, direction, start_time, game_won, game_mode, time_limit=None):
+async def move_tiles_animated(window, tiles, direction, start_time, game_won, game_mode, time_limit=None):
     updated = True
     blocks = set()
+    clock = pygame.time.Clock()
 
     if direction == "left":
         sort_func = lambda x: x.col
@@ -276,7 +286,6 @@ def move_tiles(window, tiles, clock, direction, start_time, game_won, game_mode,
         ceil = False
 
     while updated:
-        clock.tick(FPS)
         updated = False
         sorted_tiles = sorted(tiles.values(), key=sort_func, reverse=reverse)
 
@@ -306,7 +315,17 @@ def move_tiles(window, tiles, clock, direction, start_time, game_won, game_mode,
             tile.set_pos(ceil)
             updated = True
 
-        update_tiles(window, tiles, sorted_tiles, start_time, game_won, game_mode, time_limit)
+        # Update tiles dictionary
+        tiles.clear()
+        for tile in sorted_tiles:
+            tiles[f"{tile.row}{tile.col}"] = tile
+
+        # Draw the current state
+        draw_game(window, tiles, start_time, game_won, game_mode, time_limit)
+        pygame.display.update()
+        
+        # Yield control to allow other operations
+        await asyncio.sleep(1/FPS)
 
     return end_move(tiles)
 
@@ -320,14 +339,6 @@ def end_move(tiles):
     return "continue"
 
 
-def update_tiles(window, tiles, sorted_tiles, start_time, game_won, game_mode, time_limit=None):
-    tiles.clear()
-    for tile in sorted_tiles:
-        tiles[f"{tile.row}{tile.col}"] = tile
-
-    draw(window, tiles, start_time, game_won, game_mode, time_limit)
-
-
 def generate_tiles():
     tiles = {}
     for _ in range(2):
@@ -337,102 +348,104 @@ def generate_tiles():
     return tiles
 
 
-def start_screen():
+def handle_menu_input(event, game_state):
+    if event.type == pygame.KEYDOWN:
+        if event.key == pygame.K_UP:
+            game_state.selected_option = (game_state.selected_option - 1) % 3
+        elif event.key == pygame.K_DOWN:
+            game_state.selected_option = (game_state.selected_option + 1) % 3
+        elif event.key == pygame.K_RETURN:
+            if game_state.selected_option == 0:
+                game_state.current_screen = "game"
+                game_state.game_mode = "normal"
+                game_state.tiles = generate_tiles()
+                game_state.start_time = time.time()
+                game_state.game_won = False
+                game_state.game_over = False
+            elif game_state.selected_option == 1:
+                game_state.current_screen = "game"
+                game_state.game_mode = "timed"
+                game_state.tiles = generate_tiles()
+                game_state.start_time = time.time()
+                game_state.game_won = False
+                game_state.game_over = False
+            elif game_state.selected_option == 2:
+                return False
+    return True
+
+
+async def handle_game_input(event, game_state):
+    if event.type == pygame.KEYDOWN:
+        if event.key == pygame.K_r:
+            # Restart the game
+            game_state.tiles = generate_tiles()
+            game_state.start_time = time.time()
+            game_state.game_won = False
+            game_state.game_over = False
+        elif event.key == pygame.K_ESCAPE:
+            # Return to menu
+            game_state.current_screen = "menu"
+        elif not game_state.game_won and not game_state.game_over:
+            if event.key == pygame.K_LEFT:
+                await move_tiles_animated(WINDOW, game_state.tiles, "left", 
+                                        game_state.start_time, game_state.game_won, 
+                                        game_state.game_mode, game_state.time_limit)
+            elif event.key == pygame.K_RIGHT:
+                await move_tiles_animated(WINDOW, game_state.tiles, "right", 
+                                        game_state.start_time, game_state.game_won, 
+                                        game_state.game_mode, game_state.time_limit)
+            elif event.key == pygame.K_UP:
+                await move_tiles_animated(WINDOW, game_state.tiles, "up", 
+                                        game_state.start_time, game_state.game_won, 
+                                        game_state.game_mode, game_state.time_limit)
+            elif event.key == pygame.K_DOWN:
+                await move_tiles_animated(WINDOW, game_state.tiles, "down", 
+                                        game_state.start_time, game_state.game_won, 
+                                        game_state.game_mode, game_state.time_limit)
+
+
+async def main():
     clock = pygame.time.Clock()
-    selected_option = 0
-    
-    while True:
-        clock.tick(FPS)
-        
+    game_state = GameState()
+    running = True
+
+    while running:
+        # Handle events
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
-                return "exit"
+                running = False
             
-            if event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_UP:
-                    selected_option = (selected_option - 1) % 3
-                elif event.key == pygame.K_DOWN:
-                    selected_option = (selected_option + 1) % 3
-                elif event.key == pygame.K_RETURN:
-                    if selected_option == 0:
-                        return "normal"
-                    elif selected_option == 1:
-                        return "timed"
-                    elif selected_option == 2:
-                        return "exit"
-        
-        draw_start_screen(WINDOW, selected_option)
+            if game_state.current_screen == "menu":
+                if not handle_menu_input(event, game_state):
+                    running = False
+            elif game_state.current_screen == "game":
+                await handle_game_input(event, game_state)
 
+        # Update game state
+        if game_state.current_screen == "game":
+            # Check for 2048 tile
+            if not game_state.game_won and check_for_2048(game_state.tiles):
+                game_state.game_won = True
+            
+            # Check for time limit in timed mode
+            if (game_state.game_mode == "timed" and not game_state.game_won and 
+                not game_state.game_over):
+                if check_time_up(game_state.start_time, game_state.time_limit):
+                    game_state.game_over = True
 
-def game_loop(window, game_mode):
-    clock = pygame.time.Clock()
-    run = True
-    start_time = time.time()
-    game_won = False
-    time_limit = 90 if game_mode == "timed" else None
-    game_over = False
+        # Render
+        if game_state.current_screen == "menu":
+            draw_start_screen(WINDOW, game_state.selected_option)
+        elif game_state.current_screen == "game":
+            time_limit = game_state.time_limit if game_state.game_mode == "timed" else None
+            draw_game(WINDOW, game_state.tiles, game_state.start_time, 
+                     game_state.game_won, game_state.game_mode, time_limit)
 
-    tiles = generate_tiles()
+        pygame.display.update()
+        await asyncio.sleep(1/FPS)
 
-    while run:
-        clock.tick(FPS)
-        
-        # Check for 2048 tile
-        if not game_won and check_for_2048(tiles):
-            game_won = True
-        
-        # Check for time limit in timed mode
-        if game_mode == "timed" and not game_won and not game_over:
-            if check_time_up(start_time, time_limit):
-                game_over = True
-
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                run = False
-                break
-
-            if event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_r:
-                    # Restart the game
-                    tiles = generate_tiles()
-                    start_time = time.time()
-                    game_won = False
-                    game_over = False
-                elif event.key == pygame.K_ESCAPE:
-                    # Return to menu
-                    return "menu"
-                elif not game_won and not game_over:
-                    if event.key == pygame.K_LEFT:
-                        move_tiles(window, tiles, clock, "left", start_time, game_won, game_mode, time_limit)
-                    elif event.key == pygame.K_RIGHT:
-                        move_tiles(window, tiles, clock, "right", start_time, game_won, game_mode, time_limit)
-                    elif event.key == pygame.K_UP:
-                        move_tiles(window, tiles, clock, "up", start_time, game_won, game_mode, time_limit)
-                    elif event.key == pygame.K_DOWN:
-                        move_tiles(window, tiles, clock, "down", start_time, game_won, game_mode, time_limit)
-
-        draw(window, tiles, start_time, game_won, game_mode, time_limit)
-
-    return "exit"
-
-
-def main():
-    while True:
-        choice = start_screen()
-        
-        if choice == "exit":
-            break
-        elif choice == "normal":
-            result = game_loop(WINDOW, "normal")
-            if result == "exit":
-                break
-        elif choice == "timed":
-            result = game_loop(WINDOW, "timed")
-            if result == "exit":
-                break
-    
     pygame.quit()
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
